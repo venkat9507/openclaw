@@ -19,7 +19,11 @@ import {
 } from "../utils/delivery-context.js";
 import { isEmbeddedPiRunActive, queueEmbeddedPiMessage } from "./pi-embedded.js";
 import { type AnnounceQueueItem, enqueueAnnounce } from "./subagent-announce-queue.js";
-import { readLatestAssistantReply } from "./tools/agent-step.js";
+import {
+  checkSessionHasUnrecoveredError,
+  readLatestAssistantReply,
+  readToolsUsedInSession,
+} from "./tools/agent-step.js";
 
 function formatDurationShort(valueMs?: number) {
   if (!valueMs || !Number.isFinite(valueMs) || valueMs <= 0) {
@@ -316,10 +320,12 @@ export function buildSubagentSystemPrompt(params: {
     "4. **Be ephemeral** - You may be terminated after task completion. That's fine.",
     "",
     "## Output Format",
-    "When complete, your final response should include:",
-    "- What you accomplished or found",
-    "- Any relevant details the main agent should know",
-    "- Keep it concise but informative",
+    "When complete, your final response must include:",
+    "- A clear, direct answer to the assigned task",
+    "- Supporting details (sources, reasoning, caveats) the main agent needs to verify quality",
+    "- If you could not complete the task: explain exactly what went wrong and what you tried",
+    "- Keep it thorough but organized (use bullet points or sections for complex output)",
+    "- Do NOT include greetings, sign-offs, or conversational filler",
     "",
     "## What You DON'T Do",
     "- NO user conversations (that's main agent's job)",
@@ -406,6 +412,17 @@ export async function runSubagentAnnounceFlow(params: {
     }
 
     if (!reply) {
+      // Brief delay to allow transcript flush to complete before retrying.
+      // The agent run may signal completion before the final message is persisted.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      reply = await readLatestAssistantReply({
+        sessionKey: params.childSessionKey,
+      });
+    }
+
+    if (!reply) {
+      // One more attempt with a longer delay for slow disk I/O.
+      await new Promise((resolve) => setTimeout(resolve, 1000));
       reply = await readLatestAssistantReply({
         sessionKey: params.childSessionKey,
       });
@@ -415,12 +432,25 @@ export async function runSubagentAnnounceFlow(params: {
       outcome = { status: "unknown" };
     }
 
-    // Build stats
-    const statsLine = await buildSubagentStatsLine({
-      sessionKey: params.childSessionKey,
-      startedAt: params.startedAt,
-      endedAt: params.endedAt,
-    });
+    // Build stats and collect tools used + check for unrecovered errors
+    const [statsLine, toolsUsed, hadUnrecoveredError] = await Promise.all([
+      buildSubagentStatsLine({
+        sessionKey: params.childSessionKey,
+        startedAt: params.startedAt,
+        endedAt: params.endedAt,
+      }),
+      readToolsUsedInSession({ sessionKey: params.childSessionKey }).catch(() => [] as string[]),
+      checkSessionHasUnrecoveredError({ sessionKey: params.childSessionKey }).catch(() => false),
+    ]);
+
+    // Downgrade "ok" to "error" if the sub-agent's last tool call failed
+    // (e.g. schema validation error that the agent didn't recover from).
+    if (outcome.status === "ok" && hadUnrecoveredError) {
+      outcome = {
+        status: "error",
+        error: "sub-agent ended with a tool error it could not recover from",
+      };
+    }
 
     // Build status label
     const statusLabel =
@@ -434,18 +464,61 @@ export async function runSubagentAnnounceFlow(params: {
 
     // Build instructional message for main agent
     const taskLabel = params.label || params.task || "background task";
+    const isFailure =
+      outcome.status === "error" || outcome.status === "timeout" || outcome.status === "unknown";
+
+    const verificationInstructions = isFailure
+      ? [
+          "## Sub-Agent Failure - Ask Before Recovering",
+          "The sub-agent failed. You MUST:",
+          "1. Inform the user briefly what went wrong (no jargon, no stats).",
+          "2. Ask the user if they want you to handle it directly.",
+          "3. Do NOT attempt the task yourself unless the user explicitly approves.",
+          "4. Do NOT silently retry or work around the failure.",
+        ]
+      : [
+          "## Output Verification (do this before relaying)",
+          "Before presenting this to the user, verify:",
+          "- Completeness: Does the output fully address what the user asked?",
+          "- Accuracy: Does it contain obvious errors or contradictions?",
+          "- Relevance: Did the sub-agent stay on-task?",
+          "- Format: Is it readable and well-structured for the current platform?",
+          "",
+          "If the output is good: present it naturally. Sign with the sub-agent name.",
+          "If the output is poor but has useful parts: improve the presentation, note any gaps.",
+          "If the output is fundamentally wrong or empty: tell the user the sub-agent could not produce a usable result and ask if they want you to try directly.",
+        ];
+
+    const toolsLine = toolsUsed.length > 0 ? `Tools used: ${toolsUsed.join(", ")}` : undefined;
+
+    // Build the exact signature footer the manager must use.
+    // Derive a friendly name from the childSessionKey (e.g. "agent:research:subagent:uuid" -> "Research Agent").
+    const derivedAgentId = resolveAgentIdFromSessionKey(params.childSessionKey);
+    const derivedAgentName = derivedAgentId
+      ? `${derivedAgentId.charAt(0).toUpperCase()}${derivedAgentId.slice(1)} Agent`
+      : undefined;
+    const agentLabel = params.label || derivedAgentName || "Sub-Agent";
+    const toolsSuffix = toolsUsed.length > 0 ? ` using ${toolsUsed.join(", ")}` : "";
+    const mandatoryFooter = `**Processed by ${agentLabel}**${toolsSuffix}`;
+
     const triggerMessage = [
-      `A background task "${taskLabel}" just ${statusLabel}.`,
+      `A sub-agent task "${taskLabel}" just ${statusLabel}.`,
       "",
       "Findings:",
       reply || "(no output)",
       "",
       statsLine,
+      toolsLine,
       "",
-      "Summarize this naturally for the user. Keep it brief (1-2 sentences). Flow it into the conversation naturally.",
-      "Do not mention technical details like tokens, stats, or that this was a background task.",
+      ...verificationInstructions,
+      "",
+      "Do not mention technical details like tokens, stats, session keys, or that this was a sub-agent task.",
+      `MANDATORY: Your response MUST end with this exact footer on its own line (copy verbatim):`,
+      mandatoryFooter,
       "You can respond with NO_REPLY if no announcement is needed (e.g., internal task with no user-facing result).",
-    ].join("\n");
+    ]
+      .filter((line): line is string => line !== undefined)
+      .join("\n");
 
     const queued = await maybeQueueSubagentAnnounce({
       requesterSessionKey: params.requesterSessionKey,

@@ -1,9 +1,8 @@
-import JSON5 from "json5";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { OpenClawConfig, ConfigFileSnapshot, LegacyConfigIssue } from "./types.js";
+import JSON5 from "json5";
 import {
   loadShellEnvFallback,
   resolveShellEnvFallbackTimeoutMs,
@@ -16,6 +15,7 @@ import {
   applyCompactionDefaults,
   applyContextPruningDefaults,
   applyAgentDefaults,
+  applyRetryDefaults,
   applyLoggingDefaults,
   applyMessageDefaults,
   applyModelDefaults,
@@ -29,6 +29,7 @@ import { findLegacyConfigIssues } from "./legacy.js";
 import { normalizeConfigPaths } from "./normalize-paths.js";
 import { resolveConfigPath, resolveDefaultConfigCandidates, resolveStateDir } from "./paths.js";
 import { applyConfigOverrides } from "./runtime-overrides.js";
+import type { OpenClawConfig, ConfigFileSnapshot, LegacyConfigIssue } from "./types.js";
 import { validateConfigObjectWithPlugins } from "./validation.js";
 import { compareOpenClawVersions } from "./version.js";
 
@@ -276,8 +277,10 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
       const cfg = applyModelDefaults(
         applyCompactionDefaults(
           applyContextPruningDefaults(
-            applyAgentDefaults(
-              applySessionDefaults(applyLoggingDefaults(applyMessageDefaults(validated.config))),
+            applyRetryDefaults(
+              applyAgentDefaults(
+                applySessionDefaults(applyLoggingDefaults(applyMessageDefaults(validated.config))),
+              ),
             ),
           ),
         ),
@@ -328,7 +331,9 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
         applyModelDefaults(
           applyCompactionDefaults(
             applyContextPruningDefaults(
-              applyAgentDefaults(applySessionDefaults(applyMessageDefaults({}))),
+              applyRetryDefaults(
+                applyAgentDefaults(applySessionDefaults(applyMessageDefaults({}))),
+              ),
             ),
           ),
         ),
@@ -450,8 +455,16 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
         config: normalizeConfigPaths(
           applyTalkApiKey(
             applyModelDefaults(
-              applyAgentDefaults(
-                applySessionDefaults(applyLoggingDefaults(applyMessageDefaults(validated.config))),
+              applyCompactionDefaults(
+                applyContextPruningDefaults(
+                  applyRetryDefaults(
+                    applyAgentDefaults(
+                      applySessionDefaults(
+                        applyLoggingDefaults(applyMessageDefaults(validated.config)),
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
           ),

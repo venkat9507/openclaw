@@ -1,7 +1,3 @@
-import type { MessagingToolSend } from "../../agents/pi-embedded-messaging.js";
-import type { OpenClawConfig } from "../../config/config.js";
-import type { AgentDefaultsConfig } from "../../config/types.js";
-import type { CronJob } from "../types.js";
 import {
   resolveAgentConfig,
   resolveAgentDir,
@@ -28,10 +24,12 @@ import {
   resolveHooksGmailModel,
   resolveThinkingDefault,
 } from "../../agents/model-selection.js";
+import type { MessagingToolSend } from "../../agents/pi-embedded-messaging.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
 import { buildWorkspaceSkillSnapshot } from "../../agents/skills.js";
 import { getSkillsSnapshotVersion } from "../../agents/skills/refresh.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
+import { extractToolNamesFromMessages } from "../../agents/tools/sessions-helpers.js";
 import { hasNonzeroUsage } from "../../agents/usage.js";
 import { ensureAgentWorkspace } from "../../agents/workspace.js";
 import {
@@ -40,7 +38,10 @@ import {
   supportsXHighThinking,
 } from "../../auto-reply/thinking.js";
 import { createOutboundSendDeps, type CliDeps } from "../../cli/outbound-send-deps.js";
+import type { OpenClawConfig } from "../../config/config.js";
 import { resolveSessionTranscriptPath, updateSessionStore } from "../../config/sessions.js";
+import type { AgentDefaultsConfig } from "../../config/types.js";
+import { readSessionMessages } from "../../gateway/session-utils.fs.js";
 import { registerAgentRunContext } from "../../infra/agent-events.js";
 import { deliverOutboundPayloads } from "../../infra/outbound/deliver.js";
 import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
@@ -53,6 +54,7 @@ import {
   isExternalHookSession,
 } from "../../security/external-content.js";
 import { resolveCronDeliveryPlan } from "../delivery.js";
+import type { CronJob } from "../types.js";
 import { resolveDeliveryTarget } from "./delivery-target.js";
 import {
   isHeartbeatOnlyResponse,
@@ -281,6 +283,7 @@ export async function runCronIsolatedAgentTurn(params: {
   const resolvedDelivery = await resolveDeliveryTarget(cfgWithAgentDefaults, agentId, {
     channel: deliveryPlan.channel ?? "last",
     to: deliveryPlan.to,
+    accountId: deliveryPlan.accountId,
   });
 
   const userTimezone = resolveUserTimezone(params.cfg.agents?.defaults?.userTimezone);
@@ -400,6 +403,7 @@ export async function runCronIsolatedAgentTurn(params: {
           agentId,
           messageChannel,
           agentAccountId: resolvedDelivery.accountId,
+          messageTo: resolvedDelivery.to,
           sessionFile,
           workspaceDir,
           config: cfgWithAgentDefaults,
@@ -465,6 +469,35 @@ export async function runCronIsolatedAgentTurn(params: {
       : synthesizedText
         ? [{ text: synthesizedText }]
         : [];
+
+  // Append "Processed by X Agent using Y" attribution footer to cron delivery payloads.
+  if (deliveryPayloads.length > 0) {
+    let toolsUsed: string[] = [];
+    try {
+      const transcriptPath = resolveSessionTranscriptPath(
+        cronSession.sessionEntry.sessionId,
+        agentId,
+      );
+      const messages = readSessionMessages(
+        cronSession.sessionEntry.sessionId,
+        undefined,
+        transcriptPath,
+      );
+      toolsUsed = extractToolNamesFromMessages(messages);
+    } catch {
+      // Best-effort: skip attribution if transcript is unreadable.
+    }
+    const agentName =
+      agentConfigOverride?.name ??
+      (agentId ? `${agentId.charAt(0).toUpperCase()}${agentId.slice(1)} Agent` : "Cron Agent");
+    const toolsSuffix = toolsUsed.length > 0 ? ` using ${toolsUsed.join(", ")}` : "";
+    const footer = `\n\n**Processed by ${agentName}**${toolsSuffix}`;
+    const last = deliveryPayloads[deliveryPayloads.length - 1];
+    if (last && typeof last.text === "string") {
+      last.text = last.text + footer;
+    }
+  }
+
   const deliveryBestEffort = resolveCronDeliveryBestEffort(params.job);
 
   // Skip delivery for heartbeat-only responses (HEARTBEAT_OK with no real content).

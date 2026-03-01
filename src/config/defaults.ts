@@ -1,9 +1,9 @@
-import type { OpenClawConfig } from "./types.js";
-import type { ModelDefinitionConfig } from "./types.models.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../agents/defaults.js";
 import { parseModelRef } from "../agents/model-selection.js";
 import { DEFAULT_AGENT_MAX_CONCURRENT, DEFAULT_SUBAGENT_MAX_CONCURRENT } from "./agent-limits.js";
 import { resolveTalkApiKey } from "./talk.js";
+import type { OpenClawConfig } from "./types.js";
+import type { ModelDefinitionConfig } from "./types.models.js";
 
 type WarnState = { warned: boolean };
 
@@ -326,6 +326,94 @@ export function applyAgentDefaults(cfg: OpenClawConfig): OpenClawConfig {
       defaults: {
         ...nextDefaults,
         subagents: nextSubagents,
+      },
+    },
+  };
+}
+
+export function applyRetryDefaults(cfg: OpenClawConfig): OpenClawConfig {
+  const agents = cfg.agents;
+  const defaults = agents?.defaults;
+  const retry = defaults?.retry;
+
+  if (!retry) {
+    return cfg;
+  }
+
+  let mutated = false;
+  const nextRetry = { ...retry };
+
+  // Apply defaults for subagent retry if not present
+  if (!nextRetry.subagent) {
+    nextRetry.subagent = {
+      maxAttempts: 1, // disabled by default
+      delayMs: 2000,
+      maxDelayMs: 30000,
+      jitter: 0.1,
+    };
+    mutated = true;
+  } else if (!nextRetry.subagent.maxAttempts) {
+    nextRetry.subagent = {
+      ...nextRetry.subagent,
+      maxAttempts: 1, // disabled by default
+    };
+    mutated = true;
+  }
+
+  // Apply defaults for tool retry if not present
+  if (!nextRetry.tool) {
+    nextRetry.tool = {
+      maxAttempts: 1, // disabled by default
+      minDelayMs: 300,
+      maxDelayMs: 10000,
+      jitter: 0.1,
+    };
+    mutated = true;
+  } else if (!nextRetry.tool.maxAttempts) {
+    nextRetry.tool = {
+      ...nextRetry.tool,
+      maxAttempts: 1, // disabled by default
+    };
+    mutated = true;
+  }
+
+  // Apply defaults for turn retry if not present
+  if (!nextRetry.turn) {
+    nextRetry.turn = {
+      maxAttempts: 1, // disabled by default
+      minDelayMs: 1000,
+      maxDelayMs: 15000,
+      jitter: 0.1,
+    };
+    mutated = true;
+  } else if (!nextRetry.turn.maxAttempts) {
+    nextRetry.turn = {
+      ...nextRetry.turn,
+      maxAttempts: 1, // disabled by default
+    };
+    mutated = true;
+  }
+
+  // Apply defaults for notifications if not present
+  if (!nextRetry.notifications) {
+    nextRetry.notifications = {
+      enabled: true,
+      cooldownMs: 300000, // 5 minutes
+    };
+    mutated = true;
+  }
+
+  if (!mutated) {
+    return cfg;
+  }
+
+  return {
+    ...cfg,
+    agents: {
+      ...agents,
+      defaults: {
+        ...defaults,
+        retry: nextRetry,
       },
     },
   };

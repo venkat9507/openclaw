@@ -241,6 +241,8 @@ export type AgentDefaultsConfig = {
     /** Auto-prune sandbox containers. */
     prune?: SandboxPruneSettings;
   };
+  /** Retry configuration for sub-agents, tools, skills, and agent turns. */
+  retry?: AgentRetryDefaultsConfig;
 };
 
 export type AgentCompactionMode = "default" | "safeguard";
@@ -265,4 +267,37 @@ export type AgentCompactionMemoryFlushConfig = {
   prompt?: string;
   /** System prompt appended for the memory flush turn. */
   systemPrompt?: string;
+};
+
+export type AgentRetryTimingConfig = {
+  /** Max attempts (default: 1 for disabled, 3 for enabled). */
+  maxAttempts: number;
+  /** Base delay in milliseconds for subagent retry (default: 2000). */
+  delayMs?: number;
+  /** Min delay in milliseconds for exponential backoff (tool/turn retry, default: 300). */
+  minDelayMs?: number;
+  /** Max delay in milliseconds with exponential backoff (default: 30000). */
+  maxDelayMs?: number;
+  /** Jitter factor 0-1 (percentage of randomness added to backoff, default: 0.1). */
+  jitter?: number;
+};
+
+export type AgentRetryNotificationConfig = {
+  /** Send notifications when retry limit is exhausted (default: true). */
+  enabled?: boolean;
+  /** Cooldown in milliseconds: min time between notifications for same operation type (default: 300000 = 5 min). */
+  cooldownMs?: number;
+};
+
+export type AgentRetryDefaultsConfig = {
+  /** Sub-agent spawn/completion retry configuration. */
+  subagent?: AgentRetryTimingConfig;
+  /** Tool execution retry configuration (web_search, web_fetch, message, gateway RPC tools). */
+  tool?: AgentRetryTimingConfig;
+  /** Workspace skill execution retry configuration (web-search, etc). */
+  skill?: AgentRetryTimingConfig;
+  /** Agent turn execution retry configuration (main agent model calls). */
+  turn?: AgentRetryTimingConfig;
+  /** Notification configuration for retry exhaustion. */
+  notifications?: AgentRetryNotificationConfig;
 };

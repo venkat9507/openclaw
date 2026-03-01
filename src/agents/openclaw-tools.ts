@@ -1,11 +1,12 @@
 import type { OpenClawConfig } from "../config/config.js";
-import type { GatewayMessageChannel } from "../utils/message-channel.js";
-import type { AnyAgentTool } from "./tools/common.js";
 import { resolvePluginTools } from "../plugins/tools.js";
+import type { GatewayMessageChannel } from "../utils/message-channel.js";
 import { resolveSessionAgentId } from "./agent-scope.js";
+import { wrapToolWithRetry } from "./tool-retry.js";
 import { createAgentsListTool } from "./tools/agents-list-tool.js";
 import { createBrowserTool } from "./tools/browser-tool.js";
 import { createCanvasTool } from "./tools/canvas-tool.js";
+import type { AnyAgentTool } from "./tools/common.js";
 import { createCronTool } from "./tools/cron-tool.js";
 import { createGatewayTool } from "./tools/gateway-tool.js";
 import { createImageTool } from "./tools/image-tool.js";
@@ -66,15 +67,30 @@ export function createOpenClawTools(options?: {
         modelHasVision: options?.modelHasVision,
       })
     : null;
-  const webSearchTool = createWebSearchTool({
+  // Get retry config from agent defaults
+  const retryConfig = options?.config?.agents?.defaults?.retry;
+  const toolRetryConfig = retryConfig?.tool
+    ? { maxAttempts: retryConfig.tool.maxAttempts }
+    : undefined;
+
+  let webSearchTool = createWebSearchTool({
+    config: options?.config,
+    sandboxed: options?.sandboxed,
+    workspaceDir: options?.workspaceDir,
+  });
+  if (webSearchTool) {
+    webSearchTool = wrapToolWithRetry(webSearchTool, toolRetryConfig);
+  }
+
+  let webFetchTool = createWebFetchTool({
     config: options?.config,
     sandboxed: options?.sandboxed,
   });
-  const webFetchTool = createWebFetchTool({
-    config: options?.config,
-    sandboxed: options?.sandboxed,
-  });
-  const messageTool = options?.disableMessageTool
+  if (webFetchTool) {
+    webFetchTool = wrapToolWithRetry(webFetchTool, toolRetryConfig);
+  }
+
+  let messageTool = options?.disableMessageTool
     ? null
     : createMessageTool({
         agentAccountId: options?.agentAccountId,
@@ -88,6 +104,9 @@ export function createOpenClawTools(options?: {
         sandboxRoot: options?.sandboxRoot,
         requireExplicitTarget: options?.requireExplicitMessageTarget,
       });
+  if (messageTool) {
+    messageTool = wrapToolWithRetry(messageTool, toolRetryConfig);
+  }
   const tools: AnyAgentTool[] = [
     createBrowserTool({
       sandboxBridgeUrl: options?.sandboxBrowserBridgeUrl,
@@ -100,16 +119,22 @@ export function createOpenClawTools(options?: {
     }),
     createCronTool({
       agentSessionKey: options?.agentSessionKey,
+      agentAccountId: options?.agentAccountId,
+      agentChannel: options?.agentChannel,
+      agentTo: options?.agentTo,
     }),
     ...(messageTool ? [messageTool] : []),
     createTtsTool({
       agentChannel: options?.agentChannel,
       config: options?.config,
     }),
-    createGatewayTool({
-      agentSessionKey: options?.agentSessionKey,
-      config: options?.config,
-    }),
+    wrapToolWithRetry(
+      createGatewayTool({
+        agentSessionKey: options?.agentSessionKey,
+        config: options?.config,
+      }),
+      toolRetryConfig,
+    ),
     createAgentsListTool({
       agentSessionKey: options?.agentSessionKey,
       requesterAgentIdOverride: options?.requesterAgentIdOverride,
@@ -122,23 +147,29 @@ export function createOpenClawTools(options?: {
       agentSessionKey: options?.agentSessionKey,
       sandboxed: options?.sandboxed,
     }),
-    createSessionsSendTool({
-      agentSessionKey: options?.agentSessionKey,
-      agentChannel: options?.agentChannel,
-      sandboxed: options?.sandboxed,
-    }),
-    createSessionsSpawnTool({
-      agentSessionKey: options?.agentSessionKey,
-      agentChannel: options?.agentChannel,
-      agentAccountId: options?.agentAccountId,
-      agentTo: options?.agentTo,
-      agentThreadId: options?.agentThreadId,
-      agentGroupId: options?.agentGroupId,
-      agentGroupChannel: options?.agentGroupChannel,
-      agentGroupSpace: options?.agentGroupSpace,
-      sandboxed: options?.sandboxed,
-      requesterAgentIdOverride: options?.requesterAgentIdOverride,
-    }),
+    wrapToolWithRetry(
+      createSessionsSendTool({
+        agentSessionKey: options?.agentSessionKey,
+        agentChannel: options?.agentChannel,
+        sandboxed: options?.sandboxed,
+      }),
+      toolRetryConfig,
+    ),
+    wrapToolWithRetry(
+      createSessionsSpawnTool({
+        agentSessionKey: options?.agentSessionKey,
+        agentChannel: options?.agentChannel,
+        agentAccountId: options?.agentAccountId,
+        agentTo: options?.agentTo,
+        agentThreadId: options?.agentThreadId,
+        agentGroupId: options?.agentGroupId,
+        agentGroupChannel: options?.agentGroupChannel,
+        agentGroupSpace: options?.agentGroupSpace,
+        sandboxed: options?.sandboxed,
+        requesterAgentIdOverride: options?.requesterAgentIdOverride,
+      }),
+      toolRetryConfig,
+    ),
     createSessionStatusTool({
       agentSessionKey: options?.agentSessionKey,
       config: options?.config,
