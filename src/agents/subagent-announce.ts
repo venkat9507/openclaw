@@ -27,6 +27,7 @@ import {
   buildAnnounceIdempotencyKey,
   resolveQueueAnnounceId,
 } from "./announce-idempotency.js";
+import { buildAttributionFooter, extractToolsFromSession } from "./attribution-footer.js";
 import {
   isEmbeddedPiRunActive,
   queueEmbeddedPiMessage,
@@ -71,15 +72,24 @@ function buildCompletionDeliveryMessage(params: {
   spawnMode?: SpawnSubagentMode;
   outcome?: SubagentRunOutcome;
   announceType?: SubagentAnnounceType;
+  toolsUsed?: string[];
+  agentLabel?: string;
 }): string {
   const findingsText = params.findings.trim();
   if (isAnnounceSkip(findingsText)) {
     return "";
   }
   const hasFindings = findingsText.length > 0 && findingsText !== "(no output)";
+
+  // Build attribution footer if tools were used
+  const attributionFooter =
+    params.agentLabel && params.toolsUsed && params.toolsUsed.length > 0
+      ? `\n\n${buildAttributionFooter({ agentName: params.agentLabel, toolsUsed: params.toolsUsed })}`
+      : "";
+
   // Cron completions are standalone messages — skip the subagent status header.
   if (params.announceType === "cron job") {
-    return hasFindings ? findingsText : "";
+    return hasFindings ? `${findingsText}${attributionFooter}` : "";
   }
   const header = (() => {
     if (params.outcome?.status === "error") {
@@ -99,7 +109,7 @@ function buildCompletionDeliveryMessage(params: {
   if (!hasFindings) {
     return header;
   }
-  return `${header}\n\n${findingsText}`;
+  return `${header}\n\n${findingsText}${attributionFooter}`;
 }
 
 function summarizeDeliveryError(error: unknown): string {
@@ -1278,12 +1288,30 @@ export async function runSubagentAnnounceFlow(params: {
       startedAt: params.startedAt,
       endedAt: params.endedAt,
     });
+
+    // Extract tools used by the subagent for attribution footer
+    const toolsUsed =
+      childSessionId && announceType === "subagent task"
+        ? extractToolsFromSession({
+            sessionId: childSessionId,
+            agentId: subagentName,
+          })
+        : [];
+
+    // Build agent label for attribution (e.g., "Research Agent")
+    const agentLabel =
+      subagentName && announceType === "subagent task"
+        ? `${subagentName.charAt(0).toUpperCase()}${subagentName.slice(1)} Agent`
+        : undefined;
+
     completionMessage = buildCompletionDeliveryMessage({
       findings,
       subagentName,
       spawnMode: params.spawnMode,
       outcome,
       announceType,
+      toolsUsed,
+      agentLabel,
     });
     const internalSummaryMessage = [
       `[System Message] [sessionId: ${announceSessionId}] A ${announceType} "${taskLabel}" just ${statusLabel}.`,

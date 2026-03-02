@@ -266,6 +266,8 @@ export type AgentDefaultsConfig = {
   };
   /** Optional sandbox settings for non-main sessions. */
   sandbox?: AgentSandboxConfig;
+  /** Retry configuration for sub-agents, tools, skills, and agent turns. */
+  retry?: AgentRetryDefaultsConfig;
 };
 
 export type AgentCompactionMode = "default" | "safeguard";

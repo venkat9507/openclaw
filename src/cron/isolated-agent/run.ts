@@ -5,6 +5,10 @@ import {
   resolveAgentWorkspaceDir,
   resolveDefaultAgentId,
 } from "../../agents/agent-scope.js";
+import {
+  buildAttributionFooter,
+  extractToolsFromSession,
+} from "../../agents/attribution-footer.js";
 import { resolveSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
 import { runCliAgent } from "../../agents/cli-runner.js";
 import { getCliSessionId, setCliSessionId } from "../../agents/cli-session.js";
@@ -22,7 +26,6 @@ import {
   resolveHooksGmailModel,
   resolveThinkingDefault,
 } from "../../agents/model-selection.js";
-import type { MessagingToolSend } from "../../agents/pi-embedded-messaging.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { deriveSessionTotalTokens, hasNonzeroUsage } from "../../agents/usage.js";
@@ -601,6 +604,28 @@ export async function runCronIsolatedAgentTurn(params: {
       : synthesizedText
         ? [{ text: synthesizedText }]
         : [];
+
+  // Append "Processed by X Agent using Y" attribution footer to cron delivery payloads.
+  if (deliveryPayloads.length > 0) {
+    const toolsUsed = runSessionId
+      ? extractToolsFromSession({
+          sessionId: runSessionId,
+          agentId,
+        })
+      : [];
+    const agentName =
+      agentConfigOverride?.name ??
+      (agentId ? `${agentId.charAt(0).toUpperCase()}${agentId.slice(1)} Agent` : "Cron Agent");
+    const footer =
+      toolsUsed.length > 0 ? `\n\n${buildAttributionFooter({ agentName, toolsUsed })}` : "";
+    if (footer) {
+      const last = deliveryPayloads[deliveryPayloads.length - 1];
+      if (last && typeof last.text === "string") {
+        last.text = last.text + footer;
+      }
+    }
+  }
+
   const deliveryPayloadHasStructuredContent =
     Boolean(deliveryPayload?.mediaUrl) ||
     (deliveryPayload?.mediaUrls?.length ?? 0) > 0 ||

@@ -164,6 +164,58 @@ export const AgentDefaultsSchema = z
       .strict()
       .optional(),
     sandbox: AgentSandboxSchema,
+    retry: z
+      .object({
+        subagent: z
+          .object({
+            maxAttempts: z.number().int().min(1).max(10),
+            delayMs: z.number().int().positive().optional(),
+            minDelayMs: z.number().int().positive().optional(),
+            maxDelayMs: z.number().int().positive().optional(),
+            jitter: z.number().min(0).max(1).optional(),
+          })
+          .strict()
+          .optional(),
+        tool: z
+          .object({
+            maxAttempts: z.number().int().min(1).max(10),
+            delayMs: z.number().int().positive().optional(),
+            minDelayMs: z.number().int().positive().optional(),
+            maxDelayMs: z.number().int().positive().optional(),
+            jitter: z.number().min(0).max(1).optional(),
+          })
+          .strict()
+          .optional(),
+        skill: z
+          .object({
+            maxAttempts: z.number().int().min(1).max(10),
+            delayMs: z.number().int().positive().optional(),
+            minDelayMs: z.number().int().positive().optional(),
+            maxDelayMs: z.number().int().positive().optional(),
+            jitter: z.number().min(0).max(1).optional(),
+          })
+          .strict()
+          .optional(),
+        turn: z
+          .object({
+            maxAttempts: z.number().int().min(1).max(10),
+            delayMs: z.number().int().positive().optional(),
+            minDelayMs: z.number().int().positive().optional(),
+            maxDelayMs: z.number().int().positive().optional(),
+            jitter: z.number().min(0).max(1).optional(),
+          })
+          .strict()
+          .optional(),
+        notifications: z
+          .object({
+            enabled: z.boolean().optional(),
+            cooldownMs: z.number().int().nonnegative().optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .optional();

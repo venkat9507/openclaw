@@ -4,6 +4,8 @@ import { Type } from "@sinclair/typebox";
 import { formatCliCommand } from "../../cli/command-format.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { logVerbose } from "../../globals.js";
+import { retryAsync } from "../../infra/retry.js";
+import { runExec } from "../../process/exec.js";
 import { wrapWebContent } from "../../security/external-content.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import type { AnyAgentTool } from "./common.js";
@@ -1355,6 +1357,103 @@ async function runWebSearch(params: {
   };
   writeCache(SEARCH_CACHE, cacheKey, payload, params.cacheTtlMs);
   return payload;
+}
+
+/**
+ * Execute workspace DuckDuckGo search skill.
+ * Uses Python script from workspace skills directory with automatic retry.
+ */
+async function runWorkspaceWebSearchSkill(params: {
+  query: string;
+  count: number;
+  skillBaseDir: string;
+  timeoutSeconds: number;
+}): Promise<Record<string, unknown>> {
+  const scriptPath = path.join(params.skillBaseDir, "search.py");
+  const start = Date.now();
+
+  // Wrap Python script execution with retry (3 attempts, for transient failures like timeouts)
+  const executeSkill = async () => {
+    const { stdout } = await runExec("python3", [scriptPath, params.query, String(params.count)], {
+      timeoutMs: params.timeoutSeconds * 1000,
+      maxBuffer: 1024 * 1024, // 1MB
+    });
+    return JSON.parse(stdout);
+  };
+
+  try {
+    const results = await retryAsync(executeSkill, {
+      attempts: 3,
+      minDelayMs: 300,
+      maxDelayMs: 5000,
+      jitter: 0.1,
+      shouldRetry: (err) => {
+        // Retry on timeout and connection errors; not on JSON parse errors
+        const message = err instanceof Error ? err.message : String(err);
+        return (
+          message.includes("timeout") ||
+          message.includes("ECONNREFUSED") ||
+          message.includes("ECONNRESET")
+        );
+      },
+    });
+
+    return {
+      query: params.query,
+      provider: "workspace",
+      count: Array.isArray(results) ? results.length : 0,
+      tookMs: Date.now() - start,
+      results: Array.isArray(results) ? results : [],
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      error: "workspace_skill_failed",
+      query: params.query,
+      message: `Web search skill execution failed: ${message}`,
+      tookMs: Date.now() - start,
+    };
+  }
+}
+
+/**
+ * Try to load workspace web-search skill if available.
+ * Returns null if skill is not found or fails to load.
+ */
+function tryLoadWorkspaceWebSearchSkill(workspaceDir: string): AnyAgentTool | null {
+  try {
+    const skillPath = path.join(workspaceDir, "skills", "web-search");
+    const scriptPath = path.join(skillPath, "search.py");
+
+    if (!fs.existsSync(scriptPath)) {
+      return null;
+    }
+
+    return {
+      label: "Web Search (Workspace)",
+      name: "web_search",
+      description:
+        "Search the web using workspace-installed DuckDuckGo skill (no API key required). Supports flexible search with optional result limits.",
+      parameters: WebSearchSchema,
+      execute: async (_toolCallId, args) => {
+        const params = args as Record<string, unknown>;
+        const query = readStringParam(params, "query", { required: true });
+        const count = readNumberParam(params, "count") ?? DEFAULT_SEARCH_COUNT;
+
+        const result = await runWorkspaceWebSearchSkill({
+          query,
+          count: resolveSearchCount(count, DEFAULT_SEARCH_COUNT),
+          skillBaseDir: skillPath,
+          timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
+        });
+
+        return jsonResult(result);
+      },
+    };
+  } catch {
+    // If anything goes wrong, return null to fall back to Brave/Perplexity
+    return null;
+  }
 }
 
 export function createWebSearchTool(options?: {
